@@ -503,13 +503,6 @@ VkResult jvm_buffer_create(
 
     VkMemoryRequirements mem_req;
     vkGetBufferMemoryRequirements(allocator->device, buffer, &mem_req);
-    if (mem_req.memoryTypeBits & undesired_flags)
-    {
-        JVM_ERROR(allocator, "Required buffer memory flags conflict with undesired flags");
-        vkDestroyBuffer(allocator->device, buffer, allocator_vk_callbacks(allocator));
-        jvm_free(allocator, this);
-        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-    }
 
     vk_result = !dedicated ? jvm_allocate(
             allocator,
@@ -885,13 +878,7 @@ VkResult jvm_image_create(
 
     VkMemoryRequirements mem_req;
     vkGetImageMemoryRequirements(allocator->device, img, &mem_req);
-    if (mem_req.memoryTypeBits & undesired_flags)
-    {
-        JVM_ERROR(allocator, "Required image memory flags conflict with undesired flags");
-        vkDestroyImage(allocator->device, img, allocator_vk_callbacks(allocator));
-        jvm_free(allocator, this);
-        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-    }
+
     vk_result = !dedicated ? jvm_allocate(
             allocator,
             mem_req.size,
