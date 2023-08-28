@@ -308,6 +308,14 @@ VkBuffer jvm_buffer_allocation_get_buffer(jvm_buffer_allocation* buffer_allocati
 JVM_API
 jvm_allocator* jvm_buffer_allocation_get_allocator(jvm_buffer_allocation* buffer_allocation);
 
+/**
+ * Returns the useful size of the buffer in bytes.
+ * @param buffer_allocation Buffer allocation to get the size of.
+ * @return Useful size of the allocation.
+ */
+JVM_API
+VkDeviceSize jvm_buffer_allocation_get_size(jvm_buffer_allocation* buffer_allocation);
+
 
 
 /***********************************************************************************************************************
@@ -399,6 +407,14 @@ VkImage jvm_image_allocation_get_image(jvm_image_allocation* image_allocation);
  */
 JVM_API
 jvm_allocator* jvm_image_allocation_get_allocator(jvm_image_allocation* image_allocation);
+
+/**
+ * Returns the useful size of the image in bytes.
+ * @param image_allocation Image allocation to get the size of.
+ * @return Useful size of the allocation.
+ */
+JVM_API
+VkDeviceSize jvm_image_allocation_get_size(jvm_image_allocation* image_allocation);
 
 
 #endif //JVM_JVM_H

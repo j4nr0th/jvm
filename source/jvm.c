@@ -952,3 +952,13 @@ void jvm_allocator_free_unused(jvm_allocator* allocator)
         assert(result == 0);
     }
 }
+
+VkDeviceSize jvm_buffer_allocation_get_size(jvm_buffer_allocation* buffer_allocation)
+{
+    return buffer_allocation->allocation->size - buffer_allocation->allocation->padding;
+}
+
+VkDeviceSize jvm_image_allocation_get_size(jvm_image_allocation* image_allocation)
+{
+    return image_allocation->allocation->size - image_allocation->allocation->padding;
+}
