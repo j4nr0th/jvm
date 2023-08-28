@@ -79,7 +79,7 @@ static VkResult create_new_pool(jvm_allocator* this, VkDeviceSize mem_size, uint
 
     VkMemoryAllocateInfo allocate_info =
             {
-                    .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                     .allocationSize = mem_size,
                     .memoryTypeIndex = idx,
             };
@@ -331,8 +331,8 @@ int deallocate_from_pool(jvm_allocator* allocator, jvm_allocation_pool* const po
 }
 
 VkResult jvm_allocate(
-        jvm_allocator* allocator, VkDeviceSize size, VkDeviceSize alignment, VkMemoryPropertyFlags desired_flags,
-        VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out)
+        jvm_allocator* allocator, VkDeviceSize size, VkDeviceSize alignment, uint32_t type_bits,
+        VkMemoryPropertyFlags desired_flags, VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out)
 {
     if (size < allocator->min_allocation_size)
     {
@@ -368,6 +368,16 @@ VkResult jvm_allocate(
         }
     }
 
+    //  Check for allowed memory types
+    for (unsigned i = 0; i < mem_type_count; ++i)
+    {
+        //  If the type does not have the flag bit set, then it can not be used
+        if (!(type_bits & (1 << i)))
+        {
+            scores[i] = -2;
+        }
+    }
+
     valid_count = 0;
     for (unsigned i = 0; i < mem_type_count; ++i)
     {
@@ -388,6 +398,7 @@ VkResult jvm_allocate(
     if (valid_count == 0)
     {
         JVM_ERROR(allocator, "There was no memory type with desired memory flags");
+        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     }
 
     int64_t best_score = 0;
@@ -398,6 +409,25 @@ VkResult jvm_allocate(
         {
             best_score = scores[i];
             idx = (uint32_t) i;
+        }
+    }
+    if (best_score == 0)
+    {
+        JVM_ERROR(allocator, "There was no available memory type to support allocation given the nature of the allocation,"
+                             " the desired, and the undesired flags");
+        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    }
+
+    //  Check for need to map
+    if ((allocator->memory_properties.memoryTypes[idx].propertyFlags & desired_flags) & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+    {
+        if (alignment < allocator->min_map_alignment)
+        {
+            alignment = allocator->min_map_alignment;
+        }
+        if (size < alignment)
+        {
+            size = alignment;
         }
     }
 
@@ -480,29 +510,19 @@ VkResult jvm_buffer_create(
         jvm_free(allocator, this);
         return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     }
-    mem_req.memoryTypeBits |= desired_flags;
-    if (mem_req.memoryTypeBits & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT &&
-        mem_req.alignment < allocator->min_map_alignment)
-    {
-        //  Needs to be able to map
-        mem_req.alignment = allocator->min_map_alignment;
-        if (mem_req.size < mem_req.alignment)
-        {
-            mem_req.size = mem_req.alignment;
-        }
-    }
+
     vk_result = !dedicated ? jvm_allocate(
             allocator,
             mem_req.size,
-            mem_req.alignment,
-            mem_req.memoryTypeBits,
+            mem_req.alignment, mem_req.memoryTypeBits,
+            desired_flags,
             undesired_flags,
             &this->allocation)
                           : jvm_allocate_dedicated(
                     allocator,
                     mem_req.size,
-                    mem_req.alignment,
-                    mem_req.memoryTypeBits,
+                    mem_req.alignment, mem_req.memoryTypeBits,
+                    desired_flags,
                     undesired_flags,
                     &this->allocation);
     if (vk_result != VK_SUCCESS)
@@ -685,8 +705,8 @@ VkResult jvm_chunk_mapped_invalidate(jvm_allocator* allocator, jvm_chunk* chunk)
 }
 
 VkResult jvm_allocate_dedicated(
-        jvm_allocator* allocator, VkDeviceSize size, VkDeviceSize alignment, VkMemoryPropertyFlags desired_flags,
-        VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out)
+        jvm_allocator* allocator, VkDeviceSize size, VkDeviceSize alignment, uint32_t type_bits,
+        VkMemoryPropertyFlags desired_flags, VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out)
 {
     if (size < allocator->min_allocation_size)
     {
@@ -722,6 +742,16 @@ VkResult jvm_allocate_dedicated(
         }
     }
 
+    //  Check for allowed memory types
+    for (unsigned i = 0; i < mem_type_count; ++i)
+    {
+        //  If the type does not have the flag bit set, then it can not be used
+        if (!(type_bits & (1 << i)))
+        {
+            scores[i] = -2;
+        }
+    }
+
     valid_count = 0;
     for (unsigned i = 0; i < mem_type_count; ++i)
     {
@@ -742,6 +772,7 @@ VkResult jvm_allocate_dedicated(
     if (valid_count == 0)
     {
         JVM_ERROR(allocator, "There was no memory type with desired memory flags");
+        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     }
 
     int64_t best_score = 0;
@@ -752,6 +783,25 @@ VkResult jvm_allocate_dedicated(
         {
             best_score = scores[i];
             idx = (uint32_t) i;
+        }
+    }
+    if (best_score == 0)
+    {
+        JVM_ERROR(allocator, "There was no available memory type to support allocation given the nature of the allocation,"
+                             " the desired, and the undesired flags");
+        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    }
+
+    //  Check for need to map
+    if ((allocator->memory_properties.memoryTypes[idx].propertyFlags & desired_flags) & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+    {
+        if (alignment < allocator->min_map_alignment)
+        {
+            alignment = allocator->min_map_alignment;
+        }
+        if (size < alignment)
+        {
+            size = alignment;
         }
     }
 
@@ -842,29 +892,18 @@ VkResult jvm_image_create(
         jvm_free(allocator, this);
         return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     }
-    mem_req.memoryTypeBits |= desired_flags;
-    if (mem_req.memoryTypeBits & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT &&
-        mem_req.alignment < allocator->min_map_alignment)
-    {
-        //  Needs to be able to map
-        mem_req.alignment = allocator->min_map_alignment;
-        if (mem_req.size < mem_req.alignment)
-        {
-            mem_req.size = mem_req.alignment;
-        }
-    }
     vk_result = !dedicated ? jvm_allocate(
             allocator,
             mem_req.size,
-            mem_req.alignment,
-            mem_req.memoryTypeBits,
+            mem_req.alignment, mem_req.memoryTypeBits,
+            desired_flags,
             undesired_flags,
             &this->allocation)
                           : jvm_allocate_dedicated(
                     allocator,
                     mem_req.size,
-                    mem_req.alignment,
-                    mem_req.memoryTypeBits,
+                    mem_req.alignment, mem_req.memoryTypeBits,
+                    desired_flags,
                     undesired_flags,
                     &this->allocation);
     if (vk_result != VK_SUCCESS)

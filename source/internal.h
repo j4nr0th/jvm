@@ -85,13 +85,13 @@ struct jvm_allocator_T
 
 JVM_INTERNAL_SYMBOL
 VkResult jvm_allocate(
-        jvm_allocator* allocator, VkDeviceSize size, VkDeviceSize alignment, VkMemoryPropertyFlags desired_flags,
-        VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out);
+        jvm_allocator* allocator, VkDeviceSize size, VkDeviceSize alignment, uint32_t type_bits,
+        VkMemoryPropertyFlags desired_flags, VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out);
 
 JVM_INTERNAL_SYMBOL
 VkResult jvm_allocate_dedicated(
-        jvm_allocator* allocator, VkDeviceSize size, VkDeviceSize alignment, VkMemoryPropertyFlags desired_flags,
-        VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out);
+        jvm_allocator* allocator, VkDeviceSize size, VkDeviceSize alignment, uint32_t type_bits,
+        VkMemoryPropertyFlags desired_flags, VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out);
 
 JVM_INTERNAL_SYMBOL
 VkResult jvm_deallocate(jvm_allocator* allocator, jvm_chunk* chunk);
