@@ -102,7 +102,7 @@ static VkResult create_new_pool(jvm_allocator* this, VkDeviceSize mem_size, uint
 //  Returns 0 on success, -1 when pool is not from this allocator, -2 when there are still chunks within the pool
 static int remove_pool(jvm_allocator* this, jvm_allocation_pool* pool)
 {
-    if (pool->chunk_count != 0)
+    if (pool->chunk_count > 1 || pool->chunks[0]->used)
     {
         JVM_ERROR(this, "Pool still has %u allocated chunks left", pool->chunk_count);
         return -2;
@@ -200,8 +200,9 @@ int allocate_from_pool(
             //  Chunk is in use
             continue;
         }
-        const VkDeviceSize padding = alignment - (chunk->chunk_offset & (
-                alignment - 1));   //  Based on assumption alignment is a power of two
+        const VkDeviceSize padding = alignment - (
+                chunk->chunk_offset & (
+                        alignment - 1));   //  Based on assumption alignment is a power of two
         if (chunk->size < padding + size)
         {
             //  Chunk is not large enough
@@ -452,7 +453,7 @@ VkResult jvm_allocate(
 
 VkResult jvm_buffer_create(
         jvm_allocator* allocator, const VkBufferCreateInfo* create_info, VkMemoryPropertyFlags desired_flags,
-        VkMemoryPropertyFlags undesired_flags, jvm_buffer_allocation** p_out)
+        VkMemoryPropertyFlags undesired_flags, VkBool32 dedicated, jvm_buffer_allocation** p_out)
 {
     jvm_buffer_allocation* const this = jvm_alloc(allocator, sizeof(*this));
     if (!this)
@@ -490,8 +491,20 @@ VkResult jvm_buffer_create(
             mem_req.size = mem_req.alignment;
         }
     }
-    vk_result = jvm_allocate(
-            allocator, mem_req.size, mem_req.alignment, mem_req.memoryTypeBits, undesired_flags, &this->allocation);
+    vk_result = !dedicated ? jvm_allocate(
+            allocator,
+            mem_req.size,
+            mem_req.alignment,
+            mem_req.memoryTypeBits,
+            undesired_flags,
+            &this->allocation)
+                          : jvm_allocate_dedicated(
+                    allocator,
+                    mem_req.size,
+                    mem_req.alignment,
+                    mem_req.memoryTypeBits,
+                    undesired_flags,
+                    &this->allocation);
     if (vk_result != VK_SUCCESS)
     {
         JVM_ERROR(allocator, "Could not allocate memory required for the buffer");
@@ -671,6 +684,103 @@ VkResult jvm_chunk_mapped_invalidate(jvm_allocator* allocator, jvm_chunk* chunk)
     return vkInvalidateMappedMemoryRanges(allocator->device, 1, &range);
 }
 
+VkResult jvm_allocate_dedicated(
+        jvm_allocator* allocator, VkDeviceSize size, VkDeviceSize alignment, VkMemoryPropertyFlags desired_flags,
+        VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out)
+{
+    if (size < allocator->min_allocation_size)
+    {
+        //  Should be at least this size
+        size = allocator->min_allocation_size;
+    }
+
+    if (size < alignment)
+    {
+        size = alignment;
+    }
+
+    //  Reset scores
+    const uint32_t mem_type_count = allocator->memory_properties.memoryTypeCount;
+    int64_t scores[VK_MAX_MEMORY_TYPES] = { 0 };
+    //  Check for unwanted flags
+    unsigned valid_count = 0;
+    if (undesired_flags)
+    {
+        for (unsigned i = 0; i < mem_type_count; ++i)
+        {
+            if (allocator->memory_properties.memoryTypes[i].propertyFlags & undesired_flags)
+            {
+                scores[i] = -1;
+            }
+            valid_count += 1;
+        }
+        if (valid_count == 0)
+        {
+            JVM_ERROR(allocator, "Out of %u available memory types, none contained none of the undesired flags",
+                      mem_type_count);
+            return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+        }
+    }
+
+    valid_count = 0;
+    for (unsigned i = 0; i < mem_type_count; ++i)
+    {
+        if (scores[i] == -1)
+        {
+            //  Has undesired flags
+            continue;
+        }
+        if ((allocator->memory_properties.memoryTypes[i].propertyFlags & desired_flags) == desired_flags)
+        {
+            //  Has (at least) all desired flags
+            valid_count += 1;
+            scores[i] = (int64_t) (
+                    allocator->memory_properties.memoryHeaps[allocator->memory_properties.memoryTypes[i].heapIndex].size
+                            >> 10);
+        }
+    }
+    if (valid_count == 0)
+    {
+        JVM_ERROR(allocator, "There was no memory type with desired memory flags");
+    }
+
+    int64_t best_score = 0;
+    uint32_t idx = mem_type_count;
+    for (unsigned i = 0; i < mem_type_count; ++i)
+    {
+        if (scores[i] > best_score)
+        {
+            best_score = scores[i];
+            idx = (uint32_t) i;
+        }
+    }
+
+    //  Dedicated allocation requires a new pool
+    const VkDeviceSize new_pool_size = size;
+    VkResult vk_result = create_new_pool(
+            allocator,
+            new_pool_size,
+            idx, allocator->memory_properties.memoryTypes[idx]);
+    if (vk_result != VK_SUCCESS)
+    {
+        JVM_ERROR(allocator, "Could not allocate new memory pool of size %zu", (size_t) new_pool_size);
+        return vk_result;
+    }
+
+    jvm_chunk* allocation;
+    const int alloc_res = allocate_from_pool(
+            allocator, allocator->pools[allocator->pool_count - 1], size, alignment, &allocation);
+    assert(alloc_res <= 0);
+    if (alloc_res != 0)
+    {
+        //  Could not allocate memory for pool internally
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    //  Allocating from the pool was possible
+    *p_out = allocation;
+    return VK_SUCCESS;
+}
+
 VkResult jvm_buffer_mapped_flush(jvm_buffer_allocation* buffer_allocation)
 {
     return jvm_chunk_mapped_flush(buffer_allocation->allocator, buffer_allocation->allocation);
@@ -705,7 +815,7 @@ VkResult jvm_buffer_destroy(jvm_buffer_allocation* buffer_allocation)
 
 VkResult jvm_image_create(
         jvm_allocator* allocator, const VkImageCreateInfo* create_info, VkMemoryPropertyFlags desired_flags,
-        VkMemoryPropertyFlags undesired_flags, jvm_image_allocation** p_out)
+        VkMemoryPropertyFlags undesired_flags, VkBool32 dedicated, jvm_image_allocation** p_out)
 {
     jvm_image_allocation* const this = jvm_alloc(allocator, sizeof(*this));
     if (!this)
@@ -743,8 +853,20 @@ VkResult jvm_image_create(
             mem_req.size = mem_req.alignment;
         }
     }
-    vk_result = jvm_allocate(
-            allocator, mem_req.size, mem_req.alignment, mem_req.memoryTypeBits, undesired_flags, &this->allocation);
+    vk_result = !dedicated ? jvm_allocate(
+            allocator,
+            mem_req.size,
+            mem_req.alignment,
+            mem_req.memoryTypeBits,
+            undesired_flags,
+            &this->allocation)
+                          : jvm_allocate_dedicated(
+                    allocator,
+                    mem_req.size,
+                    mem_req.alignment,
+                    mem_req.memoryTypeBits,
+                    undesired_flags,
+                    &this->allocation);
     if (vk_result != VK_SUCCESS)
     {
         JVM_ERROR(allocator, "Could not allocate memory required for the image");
@@ -801,4 +923,32 @@ VkImage jvm_image_allocation_get_image(jvm_image_allocation* image_allocation)
 jvm_allocator* jvm_image_allocation_get_allocator(jvm_image_allocation* image_allocation)
 {
     return image_allocation->allocator;
+}
+
+void jvm_allocator_free_unused(jvm_allocator* allocator)
+{
+#ifdef NDEBUG
+    if (allocator->automatically_free_unused)
+    {
+        return;
+    }
+#endif
+    for (unsigned i = 0; i < allocator->pool_count; ++i)
+    {
+        jvm_allocation_pool* const pool = allocator->pools[i];
+        if (pool->chunk_count > 1 || pool->chunks[0]->used)
+        {
+            //  Chunk has more than one chunk, or it is in use
+            continue;
+        }
+#ifndef NDEBUG
+        if (allocator->automatically_free_unused)
+        {
+            JVM_ERROR(allocator, "Allocator should have freed block at index %u", i);
+        }
+#endif
+        const int result = remove_pool(allocator, pool);
+        (void) result;
+        assert(result == 0);
+    }
 }

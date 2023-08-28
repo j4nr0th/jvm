@@ -89,6 +89,11 @@ VkResult jvm_allocate(
         VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out);
 
 JVM_INTERNAL_SYMBOL
+VkResult jvm_allocate_dedicated(
+        jvm_allocator* allocator, VkDeviceSize size, VkDeviceSize alignment, VkMemoryPropertyFlags desired_flags,
+        VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out);
+
+JVM_INTERNAL_SYMBOL
 VkResult jvm_deallocate(jvm_allocator* allocator, jvm_chunk* chunk);
 
 JVM_INTERNAL_SYMBOL

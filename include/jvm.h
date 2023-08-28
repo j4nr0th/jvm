@@ -209,6 +209,14 @@ VkResult jvm_allocator_create(
 JVM_API
 void jvm_allocator_destroy(jvm_allocator* allocator);
 
+/**
+ * Frees unused memory pools. On allocators created with jvm_allocator_create_info::automatically_free_unused set to
+ * non-zero, this does noting when not on debug build. On debug build, it will report any unfree-d pools as internal
+ * errors
+ * @param allocator Allocator for which to free unused pools.
+ */
+JVM_API
+void jvm_allocator_free_unused(jvm_allocator* allocator);
 
 
 /***********************************************************************************************************************
@@ -226,6 +234,7 @@ void jvm_allocator_destroy(jvm_allocator* allocator);
  * by the buffer.
  * @param undesired_flags Flags that the memory should not have. If these conflict with buffer required memory flags,
  * it will cause the function to fail with VK_ERROR_OUT_OF_DEVICE_MEMORY.
+ * @param dedicated If non-zero, the allocation is made for this buffer only.
  * @param p_out Pointer to receive the create allocation.
  * @return VK_SUCCESS if successful, VK_ERROR_OUT_OF_HOST_MEMORY if it can not allocate required host memory,
  * return value of vkCreateBuffer if that fails, VK_ERROR_OUT_OF_DEVICE_MEMORY if undesired_flags conflict with flags
@@ -234,7 +243,7 @@ void jvm_allocator_destroy(jvm_allocator* allocator);
 JVM_API
 VkResult jvm_buffer_create(
         jvm_allocator* allocator, const VkBufferCreateInfo* create_info, VkMemoryPropertyFlags desired_flags,
-        VkMemoryPropertyFlags undesired_flags, jvm_buffer_allocation** p_out);
+        VkMemoryPropertyFlags undesired_flags, VkBool32 dedicated, jvm_buffer_allocation** p_out);
 
 /**
  * Destroys a buffer allocation, destroying the buffer and returning its device memory to its pool.
@@ -317,6 +326,7 @@ jvm_allocator* jvm_buffer_allocation_get_allocator(jvm_buffer_allocation* buffer
  * by the image.
  * @param undesired_flags Flags that the memory should not have. If these conflict with image required memory flags,
  * it will cause the function to fail with VK_ERROR_OUT_OF_DEVICE_MEMORY.
+ * @param dedicated If non-zero, the allocation is made for this image only.
  * @param p_out Pointer to receive the create allocation.
  * @return VK_SUCCESS if successful, VK_ERROR_OUT_OF_HOST_MEMORY if it can not allocate required host memory,
  * return value of vkCreateBuffer if that fails, VK_ERROR_OUT_OF_DEVICE_MEMORY if undesired_flags conflict with flags
@@ -325,7 +335,7 @@ jvm_allocator* jvm_buffer_allocation_get_allocator(jvm_buffer_allocation* buffer
 JVM_API
 VkResult jvm_image_create(
         jvm_allocator* allocator, const VkImageCreateInfo* create_info, VkMemoryPropertyFlags desired_flags,
-        VkMemoryPropertyFlags undesired_flags, jvm_image_allocation** p_out);
+        VkMemoryPropertyFlags undesired_flags, VkBool32 dedicated, jvm_image_allocation** p_out);
 
 /**
  * Destroys a image allocation, destroying the image and returning its device memory to its pool.
