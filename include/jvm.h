@@ -243,7 +243,11 @@ void jvm_allocator_free_unused(jvm_allocator* allocator);
 JVM_API
 VkResult jvm_buffer_create(
         jvm_allocator* allocator, const VkBufferCreateInfo* create_info, VkMemoryPropertyFlags desired_flags,
-        VkMemoryPropertyFlags undesired_flags, VkBool32 dedicated, jvm_buffer_allocation** p_out);
+        VkMemoryPropertyFlags undesired_flags, VkBool32 dedicated, jvm_buffer_allocation** p_out
+#ifdef JVM_TRACK_ALLOCATIONS
+        ,const char* file, int line
+#endif
+);
 
 /**
  * Destroys a buffer allocation, destroying the buffer and returning its device memory to its pool.
@@ -343,7 +347,11 @@ VkDeviceSize jvm_buffer_allocation_get_size(jvm_buffer_allocation* buffer_alloca
 JVM_API
 VkResult jvm_image_create(
         jvm_allocator* allocator, const VkImageCreateInfo* create_info, VkMemoryPropertyFlags desired_flags,
-        VkMemoryPropertyFlags undesired_flags, VkBool32 dedicated, jvm_image_allocation** p_out);
+        VkMemoryPropertyFlags undesired_flags, VkBool32 dedicated, jvm_image_allocation** p_out
+#ifdef JVM_TRACK_ALLOCATIONS
+        ,const char* file, int line
+#endif
+);
 
 /**
  * Destroys a image allocation, destroying the image and returning its device memory to its pool.
@@ -416,5 +424,12 @@ jvm_allocator* jvm_image_allocation_get_allocator(jvm_image_allocation* image_al
 JVM_API
 VkDeviceSize jvm_image_allocation_get_size(jvm_image_allocation* image_allocation);
 
+
+#ifdef JVM_TRACK_ALLOCATIONS
+    #define jvm_buffer_create(allocator, create_info, desired_flags, undesired_flags, dedicated, p_out)\
+        jvm_buffer_create(allocator, create_info, desired_flags, undesired_flags, dedicated, p_out, __FILE__, __LINE__)
+    #define jvm_image_create(allocator, create_info, desired_flags, undesired_flags, dedicated, p_out)\
+        jvm_image_create(allocator, create_info, desired_flags, undesired_flags, dedicated, p_out, __FILE__, __LINE__)
+#endif
 
 #endif //JVM_JVM_H

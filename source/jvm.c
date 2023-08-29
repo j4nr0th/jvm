@@ -7,6 +7,9 @@
 #include "../include/jvm.h"
 #include "internal.h"
 
+#undef jvm_buffer_create
+#undef jvm_image_create
+
 static const VkAllocationCallbacks* allocator_vk_callbacks(const jvm_allocator* this)
 {
     return this->has_vk_alloc ? &this->vk_allocation_callbacks : NULL;
@@ -27,12 +30,24 @@ void jvm_allocator_destroy(jvm_allocator* allocator)
 {
     for (unsigned i = 0; i < allocator->pool_count; ++i)
     {
-        const unsigned chunks_left = allocator->pools[i]->chunk_count;
-        if (chunks_left)
+        jvm_allocation_pool* const pool = allocator->pools[i];
+        const unsigned chunks_left = pool->chunk_count;
+        if (chunks_left > 1 )
         {
             JVM_ERROR(allocator, "Pool at index %u has %u chunks left, which were not free-d yet", i, chunks_left);
         }
-        free_pool(allocator, allocator->pools[i]);
+#ifdef JVM_TRACK_ALLOCATIONS
+        for (unsigned j = 0; j < pool->chunk_count; ++j)
+        {
+            jvm_chunk* const chunk = pool->chunks[j];
+            if (chunk->used == 0)
+            {
+                continue;
+            }
+            JVM_ERROR(allocator, "Chunk allocated at %s:%d was not free-d", chunk->file, chunk->line);
+        }
+#endif
+        free_pool(allocator, pool);
     }
     jvm_free(allocator, allocator->pools);
     jvm_free(allocator, allocator);
@@ -60,12 +75,21 @@ static VkResult create_new_pool(jvm_allocator* this, VkDeviceSize mem_size, uint
         this->pools = new_ptr;
         this->pool_capacity = new_capacity;
     }
-    pool->chunk_count = 0;
+    pool->chunk_count = 1;
     pool->chunk_capacity = 32;
     pool->chunks = jvm_alloc(this, sizeof(*pool->chunks) * pool->chunk_capacity);
     if (!pool->chunks)
     {
         JVM_ERROR(this, "Could not allocate memory for the pool chunk array");
+        jvm_free(this, pool);
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+
+    jvm_chunk* const whole_chunk = jvm_alloc(this, sizeof(*whole_chunk));
+    if (!whole_chunk)
+    {
+        JVM_ERROR(this, "Could not allocate memory for the pool's initial chunk");
+        jvm_free(this, pool->chunks);
         jvm_free(this, pool);
         return VK_ERROR_OUT_OF_HOST_MEMORY;
     }
@@ -91,6 +115,17 @@ static VkResult create_new_pool(jvm_allocator* this, VkDeviceSize mem_size, uint
         jvm_free(this, pool);
         return res;
     }
+    *whole_chunk = (jvm_chunk)
+            {
+                    .chunk_offset = 0,
+                    .size = mem_size,
+                    .padding = 0,
+                    .used = 0,
+                    .mapped = 0,
+                    .memory = mem,
+                    .pool = pool,
+            };
+    pool->chunks[0] = whole_chunk;
 
     pool->memory = mem;
 
@@ -200,9 +235,13 @@ int allocate_from_pool(
             //  Chunk is in use
             continue;
         }
-        const VkDeviceSize padding = alignment - (
+        VkDeviceSize padding = alignment - (
                 chunk->chunk_offset & (
                         alignment - 1));   //  Based on assumption alignment is a power of two
+        if (padding == alignment)
+        {
+            padding = 0;
+        }
         if (chunk->size < padding + size)
         {
             //  Chunk is not large enough
@@ -267,7 +306,7 @@ int merge_chunks(jvm_allocator* allocator, jvm_allocation_pool* pool, const unsi
 {
     assert(i < pool->chunk_count);
     assert(j < pool->chunk_count);
-    assert(i == j + 1);
+    assert(i + 1 == j);
 
     if (pool->chunks[i]->used || pool->chunks[j]->used)
     {
@@ -332,7 +371,11 @@ int deallocate_from_pool(jvm_allocator* allocator, jvm_allocation_pool* const po
 
 VkResult jvm_allocate(
         jvm_allocator* allocator, VkDeviceSize size, VkDeviceSize alignment, uint32_t type_bits,
-        VkMemoryPropertyFlags desired_flags, VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out)
+        VkMemoryPropertyFlags desired_flags, VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out
+#ifdef JVM_TRACK_ALLOCATIONS
+        ,const char* file, int line
+#endif
+)
 {
     if (size < allocator->min_allocation_size)
     {
@@ -348,6 +391,10 @@ VkResult jvm_allocate(
     //  Reset scores
     const uint32_t mem_type_count = allocator->memory_properties.memoryTypeCount;
     int64_t scores[VK_MAX_MEMORY_TYPES] = { 0 };
+    for (unsigned i = 0; i < mem_type_count; ++i)
+    {
+        scores[i] = 1;
+    }
     //  Check for unwanted flags
     unsigned valid_count = 0;
     if (undesired_flags)
@@ -356,7 +403,7 @@ VkResult jvm_allocate(
         {
             if (allocator->memory_properties.memoryTypes[i].propertyFlags & undesired_flags)
             {
-                scores[i] = -1;
+                scores[i] = 0;
             }
             valid_count += 1;
         }
@@ -374,7 +421,7 @@ VkResult jvm_allocate(
         //  If the type does not have the flag bit set, then it can not be used
         if (!(type_bits & (1 << i)))
         {
-            scores[i] = -2;
+            scores[i] = 0;
         }
     }
 
@@ -389,10 +436,10 @@ VkResult jvm_allocate(
         if ((allocator->memory_properties.memoryTypes[i].propertyFlags & desired_flags) == desired_flags)
         {
             //  Has (at least) all desired flags
-            valid_count += 1;
-            scores[i] = (int64_t) (
+            scores[i] *= (int64_t) (
                     allocator->memory_properties.memoryHeaps[allocator->memory_properties.memoryTypes[i].heapIndex].size
                             >> 10);
+            valid_count += (scores[i] != 0);
         }
     }
     if (valid_count == 0)
@@ -445,6 +492,10 @@ VkResult jvm_allocate(
         if (alloc_res == 0)
         {
             //  Allocating from the pool was possible
+#ifdef JVM_TRACK_ALLOCATIONS
+            allocation->file = file;
+            allocation->line = line;
+#endif
             *p_out = allocation;
             return VK_SUCCESS;
         }
@@ -456,7 +507,7 @@ VkResult jvm_allocate(
     }
 
     //  No pool was good enough, time to allocate a new one
-    const VkDeviceSize new_pool_size = allocator->min_pool_size < size ? size : allocator->min_allocation_size;
+    const VkDeviceSize new_pool_size = allocator->min_pool_size < size ? size : allocator->min_pool_size;
     VkResult vk_result = create_new_pool(
             allocator,
             new_pool_size,
@@ -477,13 +528,21 @@ VkResult jvm_allocate(
         return VK_ERROR_OUT_OF_HOST_MEMORY;
     }
     //  Allocating from the pool was possible
+#ifdef JVM_TRACK_ALLOCATIONS
+    allocation->file = file;
+    allocation->line = line;
+#endif
     *p_out = allocation;
     return VK_SUCCESS;
 }
 
 VkResult jvm_buffer_create(
         jvm_allocator* allocator, const VkBufferCreateInfo* create_info, VkMemoryPropertyFlags desired_flags,
-        VkMemoryPropertyFlags undesired_flags, VkBool32 dedicated, jvm_buffer_allocation** p_out)
+        VkMemoryPropertyFlags undesired_flags, VkBool32 dedicated, jvm_buffer_allocation** p_out
+#ifdef JVM_TRACK_ALLOCATIONS
+        ,const char* file, int line
+#endif
+)
 {
     jvm_buffer_allocation* const this = jvm_alloc(allocator, sizeof(*this));
     if (!this)
@@ -510,14 +569,22 @@ VkResult jvm_buffer_create(
             mem_req.alignment, mem_req.memoryTypeBits,
             desired_flags,
             undesired_flags,
-            &this->allocation)
+            &this->allocation
+#ifdef JVM_TRACK_ALLOCATIONS
+            ,file, line
+#endif
+            )
                           : jvm_allocate_dedicated(
                     allocator,
                     mem_req.size,
                     mem_req.alignment, mem_req.memoryTypeBits,
                     desired_flags,
                     undesired_flags,
-                    &this->allocation);
+                    &this->allocation
+#ifdef JVM_TRACK_ALLOCATIONS
+                    ,file, line
+#endif
+            );
     if (vk_result != VK_SUCCESS)
     {
         JVM_ERROR(allocator, "Could not allocate memory required for the buffer");
@@ -644,11 +711,14 @@ VkResult jvm_chunk_unmap(jvm_allocator* allocator, jvm_chunk* chunk)
     }
     int last_unmap;
     VkResult res = unmap_pool_memory(allocator, chunk->pool, &last_unmap);
-    if (res == VK_SUCCESS && !last_unmap)
+    if (res == VK_SUCCESS)
     {
         chunk->mapped = 0;
-        //  The unmapping did not actually call vkUnmapMemory, so manually flush all changes to memory
-        return jvm_chunk_mapped_flush(allocator, chunk);
+        if (!last_unmap)
+        {
+            //  The unmapping did not actually call vkUnmapMemory, so manually flush all changes to memory
+            return jvm_chunk_mapped_flush(allocator, chunk);
+        }
     }
     return res;
 }
@@ -699,7 +769,11 @@ VkResult jvm_chunk_mapped_invalidate(jvm_allocator* allocator, jvm_chunk* chunk)
 
 VkResult jvm_allocate_dedicated(
         jvm_allocator* allocator, VkDeviceSize size, VkDeviceSize alignment, uint32_t type_bits,
-        VkMemoryPropertyFlags desired_flags, VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out)
+        VkMemoryPropertyFlags desired_flags, VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out
+#ifdef JVM_TRACK_ALLOCATIONS
+        ,const char* file, int line
+#endif
+)
 {
     if (size < allocator->min_allocation_size)
     {
@@ -820,6 +894,10 @@ VkResult jvm_allocate_dedicated(
         return VK_ERROR_OUT_OF_HOST_MEMORY;
     }
     //  Allocating from the pool was possible
+#ifdef JVM_TRACK_ALLOCATIONS
+    allocation->file = file;
+    allocation->line = line;
+#endif
     *p_out = allocation;
     return VK_SUCCESS;
 }
@@ -858,7 +936,11 @@ VkResult jvm_buffer_destroy(jvm_buffer_allocation* buffer_allocation)
 
 VkResult jvm_image_create(
         jvm_allocator* allocator, const VkImageCreateInfo* create_info, VkMemoryPropertyFlags desired_flags,
-        VkMemoryPropertyFlags undesired_flags, VkBool32 dedicated, jvm_image_allocation** p_out)
+        VkMemoryPropertyFlags undesired_flags, VkBool32 dedicated, jvm_image_allocation** p_out
+#ifdef JVM_TRACK_ALLOCATIONS
+        ,const char* file, int line
+#endif
+)
 {
     jvm_image_allocation* const this = jvm_alloc(allocator, sizeof(*this));
     if (!this)
@@ -885,14 +967,22 @@ VkResult jvm_image_create(
             mem_req.alignment, mem_req.memoryTypeBits,
             desired_flags,
             undesired_flags,
-            &this->allocation)
+            &this->allocation
+#ifdef JVM_TRACK_ALLOCATIONS
+            ,file, line
+#endif
+            )
                           : jvm_allocate_dedicated(
                     allocator,
                     mem_req.size,
                     mem_req.alignment, mem_req.memoryTypeBits,
                     desired_flags,
                     undesired_flags,
-                    &this->allocation);
+                    &this->allocation
+#ifdef JVM_TRACK_ALLOCATIONS
+                    ,file, line
+#endif
+            );
     if (vk_result != VK_SUCCESS)
     {
         JVM_ERROR(allocator, "Could not allocate memory required for the image");

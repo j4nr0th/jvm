@@ -25,6 +25,10 @@ typedef struct jvm_chunk_T jvm_chunk;
 
 struct jvm_chunk_T
 {
+#ifdef JVM_TRACK_ALLOCATIONS
+    const char* file;
+    int line;
+#endif
     VkBool32 mapped;         //  zero if not mapped
     VkBool32 used;           //  zero if not in use
     VkDeviceSize size;           //  real size of the chunk (includes any padding and rounding)
@@ -86,12 +90,20 @@ struct jvm_allocator_T
 JVM_INTERNAL_SYMBOL
 VkResult jvm_allocate(
         jvm_allocator* allocator, VkDeviceSize size, VkDeviceSize alignment, uint32_t type_bits,
-        VkMemoryPropertyFlags desired_flags, VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out);
+        VkMemoryPropertyFlags desired_flags, VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out
+#ifdef JVM_TRACK_ALLOCATIONS
+        ,const char* file, int line
+#endif
+        );
 
 JVM_INTERNAL_SYMBOL
 VkResult jvm_allocate_dedicated(
         jvm_allocator* allocator, VkDeviceSize size, VkDeviceSize alignment, uint32_t type_bits,
-        VkMemoryPropertyFlags desired_flags, VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out);
+        VkMemoryPropertyFlags desired_flags, VkMemoryPropertyFlags undesired_flags, jvm_chunk** p_out
+#ifdef JVM_TRACK_ALLOCATIONS
+        ,const char* file, int line
+#endif
+);
 
 JVM_INTERNAL_SYMBOL
 VkResult jvm_deallocate(jvm_allocator* allocator, jvm_chunk* chunk);
