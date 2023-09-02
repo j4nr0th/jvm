@@ -43,6 +43,7 @@ struct jvm_buffer_allocation_T
     jvm_allocator* allocator;  //  Allocator with which this was allocated with
     jvm_chunk* allocation; //  The underlying memory allocation chunk
     VkBuffer buffer;     //  Vulkan buffer handle bound to memory
+    VkDeviceSize buffer_size;   //  Size passed as VkBufferCreateInfo::size
 };
 
 struct jvm_image_allocation_T
@@ -50,6 +51,7 @@ struct jvm_image_allocation_T
     jvm_allocator* allocator;  //  Allocator with which this was allocated with
     jvm_chunk* allocation; //  The underlying memory allocation chunk
     VkImage image;      //  Vulkan image handle bound to memory
+    VkExtent3D extent;  //  Extent passed as VkImageCreateInfo::extent
 };
 
 struct jvm_allocation_pool_T

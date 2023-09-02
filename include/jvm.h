@@ -422,7 +422,7 @@ jvm_allocator* jvm_image_allocation_get_allocator(jvm_image_allocation* image_al
  * @return Useful size of the allocation.
  */
 JVM_API
-VkDeviceSize jvm_image_allocation_get_size(jvm_image_allocation* image_allocation);
+VkExtent3D jvm_image_allocation_get_extent(jvm_image_allocation* image_allocation);
 
 
 #ifdef JVM_TRACK_ALLOCATIONS

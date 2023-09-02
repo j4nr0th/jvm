@@ -603,6 +603,7 @@ VkResult jvm_buffer_create(
         jvm_free(allocator, this);
         return vk_result;
     }
+    this->buffer_size = create_info->size;
     this->buffer = buffer;
     this->allocator = allocator;
 
@@ -1003,6 +1004,7 @@ VkResult jvm_image_create(
     }
     this->image = img;
     this->allocator = allocator;
+    this->extent = create_info->extent;
 
     *p_out = this;
     return VK_SUCCESS;
@@ -1071,10 +1073,10 @@ void jvm_allocator_free_unused(jvm_allocator* allocator)
 
 VkDeviceSize jvm_buffer_allocation_get_size(jvm_buffer_allocation* buffer_allocation)
 {
-    return buffer_allocation->allocation->size - buffer_allocation->allocation->padding;
+    return buffer_allocation->buffer_size;
 }
 
-VkDeviceSize jvm_image_allocation_get_size(jvm_image_allocation* image_allocation)
+VkExtent3D jvm_image_allocation_get_extent(jvm_image_allocation* image_allocation)
 {
-    return image_allocation->allocation->size - image_allocation->allocation->padding;
+    return image_allocation->extent;
 }
