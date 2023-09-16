@@ -163,6 +163,7 @@ static int remove_pool(jvm_allocator* this, jvm_allocation_pool* pool)
     }
     this->pool_count -= 1;
     vkFreeMemory(this->device, pool->memory, allocator_vk_callbacks(this));
+    jvm_free(this, *pool->chunks);
     jvm_free(this, pool->chunks);
     jvm_free(this, pool);
     return 0;
@@ -628,7 +629,6 @@ VkResult jvm_deallocate(jvm_allocator* allocator, jvm_chunk* chunk)
             JVM_ERROR(allocator, "Could not remove pool from allocator");
         }
     }
-
     return VK_SUCCESS;
 }
 
@@ -932,6 +932,7 @@ VkResult jvm_buffer_destroy(jvm_buffer_allocation* buffer_allocation)
     {
         (void) jvm_chunk_unmap(allocator, chunk);
     }
+    jvm_free(allocator, buffer_allocation);
     return jvm_deallocate(allocator, chunk);
 }
 
@@ -1020,6 +1021,7 @@ jvm_image_destroy(jvm_image_allocation* image_allocation)
     {
         (void) jvm_chunk_unmap(allocator, chunk);
     }
+    jvm_free(allocator, image_allocation);
     return jvm_deallocate(allocator, chunk);
 }
 
